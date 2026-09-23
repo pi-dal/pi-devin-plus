@@ -1,97 +1,87 @@
 # pi-devin-plus
 
-A [Pi](https://pi.dev) package that uses **Devin Local** models inside Pi — an enhanced fork of [kashyab12/pi-devin](https://github.com/kashyab12/pi-devin).
+Run your **Devin / Cognition account models** — Claude Opus 5.5, GPT-5.6 Sol, Fable 5, SWE-2 and 50+ more — inside the [pi coding agent](https://pi.dev), with pi's own tools, sessions and UI. Unofficial, not affiliated with Cognition.
 
-Pi stays the harness. The [Devin CLI](https://docs.devin.ai/cli) owns login and the live model catalog (`devin auth`, `devin models list`). This is not an ACP integration and does not use Zed.
+Login once with the [Devin CLI](https://docs.devin.ai/cli); after that it behaves like any other pi provider.
 
-## What this fork adds over upstream
+## Quick start
 
-- **Thinking + sealed-signature replay** — the model's own reasoning is replayed across turns (wire fields 11/12/13/18), so long agent loops keep coherent reasoning instead of restarting blind.
-- **Devin Desktop sign-in reuse** — if the Devin CLI store is empty but Devin Desktop is signed in, the Desktop session token is imported instead of forcing a browser round-trip. `/devin-status` shows which credential source is in use.
-- **Thinking-level model variants** — reasoning families register under a single family id (e.g. `devin/claude-opus-5`) and pi's thinking level (Shift+Tab / `/thinking`) picks the variant, instead of baking `-high` into the model id. Unsupported levels are explicitly hidden.
-- **No crash on mid-stream socket close** — a dropped connection during streaming no longer takes the process down via an unhandled rejection.
-- **CLI-aligned request shape** — cascade trajectory reference (field 15) and field 20 sent alongside upstream's promptId (field 22), matching what the Devin CLI puts on the wire.
+```bash
+pi install npm:pi-devin-plus
+```
 
-All of this is rebased onto upstream's pi ≥ 0.86 `TranscriptContext` API; upstream's test suite passes unchanged.
+Then inside pi:
 
-## Why the upstream exists
+```text
+/login devin                    # instant if the Devin CLI or Desktop is already signed in
+/model devin/claude-opus-5      # pick any model your account can run
+```
 
-`pi-devin-auth` treated Devin as Cascade cloud chat. Models like Sol High, Opus 5, and Fable 5 then failed with:
+Pick a thinking level with Shift+Tab or `/thinking` — medium / high / max map to the matching model variant automatically.
+
+## Requirements
+
+- Pi Coding Agent 0.86+
+- A signed-in [Devin CLI](https://docs.devin.ai/cli) (`devin auth status`) — a signed-in Devin Desktop also works
+- Node 22.19+
+
+## What it does
+
+- **Login** — `/login devin` reuses the Devin CLI credential store (`~/.local/share/devin/credentials.toml`). If that is empty but Devin Desktop is signed in, the Desktop token is imported instead of forcing a browser round-trip.
+- **Model catalog** — the live catalog comes from `devin models list --format json`, so the model list always matches your account. Reasoning models register under one family id (e.g. `devin/claude-opus-5`); the thinking level picks the variant, and levels the family doesn't ship are hidden from the picker.
+- **Chat** — completions stream from Devin's cloud endpoint straight into pi, with full tool calling. Your previous turns — including tool calls and the model's own reasoning — are replayed so multi-step agent work stays coherent.
+
+Commands:
+
+- `/devin-status` — CLI path, version, auth state, credential source
+- `/devin-refresh` — reload the model catalog without restarting
+
+## How this differs from upstream ([kashyab12/pi-devin](https://github.com/kashyab12/pi-devin))
+
+This package is a superset of upstream 0.2.0. Upstream's fixes (pi ≥ 0.86 transcript support, system-prompt field) are included, plus:
+
+| | Effect you can see |
+|---|---|
+| Thinking + sealed-signature replay | Long agent loops keep the model's reasoning instead of restarting blind every turn |
+| Devin Desktop sign-in reuse | No forced browser login if Desktop is already signed in; `/devin-status` shows the credential source |
+| Family model ids + thinking levels | `devin/claude-opus-5` instead of `devin/claude-opus-5-high`; thinking level switches variants |
+| Socket-close crash fix | A dropped connection mid-stream no longer kills the process |
+| CLI-aligned request fields | Requests match what the Devin CLI itself sends (trajectory + prompt ids) |
+
+## Which Devin package should you install?
+
+Five pi packages talk to Devin. They are mutually exclusive (all register the `devin` provider):
+
+| | pi-devin-plus (this) | pi-devin (upstream) | pi-devin-local | pi-devin-oauth | pi-devin-auth |
+|---|---|---|---|---|---|
+| **pi ≥ 0.86 (tools + system prompt work)** | ✓ | ✓ | ✗ broken — model ignores tools, agent runs one turn | ✓ | ✗ |
+| **Thinking replay across turns** | ✓ | ✗ | ✓ | ✗ | ✗ |
+| **Devin Desktop sign-in reuse** | ✓ | ✗ | ✓ | ✗ | ✗ |
+| **One id per model family + thinking levels** | ✓ | ✗ (`-high` baked into ids) | ✓ | ✗ | ✗ |
+| **Requires Devin CLI** | ✓ | ✓ | ✓ | ✗ (own OAuth) | ✗ (token paste) |
+| **Live model catalog** | ✓ | ✓ | ✓ | ✓ | ✗ hardcoded |
+| **Maintenance** | active | active | stale (last publish 2026-09-13; fix PRs unmerged) | active but self-described "reverse engineered, can break" | stale |
+
+Short version:
+
+- Use **pi-devin-plus** (this package) if you want upstream pi-devin plus the improvements above — or if you were on pi-devin-local, which is broken on pi ≥ 0.86.
+- Use **pi-devin** if you want the minimal, upstream-only experience.
+- Use **pi-devin-oauth** only if you refuse to install the Devin CLI and accept a reverse-engineered login that can break any time.
+
+## Don't co-install
+
+Install only **one** of `pi-devin-plus`, `pi-devin`, `pi-devin-local`, `pi-devin-auth` or `pi-devin-oauth` — they all register the `devin` provider and overwrite each other.
+
+## Why a fork at all
+
+The first Devin pi packages treated Devin as plain cloud chat, and models like Opus 5, Fable 5 and Sol answered:
 
 ```text
 This model is only in Devin Local.
 ```
 
-Those models are available through the local Devin CLI. This package uses that CLI for auth + catalog, then streams completions into Pi so Pi's tools, sessions, and UI stay in charge.
-
-## Requirements
-
-- Pi Coding Agent 0.86+
-- A signed-in [Devin CLI](https://docs.devin.ai/cli) (`devin auth status`)
-- Node 22.19+ (required by Pi 0.86)
-
-The CLI binary is resolved in this order:
-
-1. `$DEVIN_CLI`
-2. `~/.local/bin/devin`, Homebrew, `/usr/local/bin/devin`
-3. Devin.app's bundled `devin` binary
-4. `which devin`
-
-## Install
-
-From git:
-
-```bash
-pi install git:github.com/kashyab12/pi-devin
-```
-
-From npm:
-
-```bash
-pi install npm:pi-devin
-```
-
-Version 0.2.0 requires Pi 0.86+ and Node 22.19+. It restores system instructions and tools on the current Pi transcript format and sends system instructions through Devin's dedicated prompt field. Version 0.1.2 predates Pi 0.86 support.
-
-`pi-devin-local` is a separate npm package maintained in the [mizorewww/pi-devin fork](https://github.com/mizorewww/pi-devin). Changes merged here do not update that package. Install only one: both packages register the `devin` provider, so their registrations can overwrite each other.
-
-Local checkout:
-
-```bash
-pi install /Users/kashyab/pi-devin
-```
-
-Restart Pi or run `/reload`.
-
-## Usage
-
-```text
-/login devin
-/model devin/claude-opus-5-high
-/model devin/claude-5-fable-high
-/model devin/gpt-5-6-sol-high
-```
-
-`/login devin` runs `devin auth login` if `~/.local/share/devin/credentials.toml` is missing. If you already signed in through the Devin CLI or Devin Desktop, that file is reused.
-
-Commands:
-
-- `/devin-status` — CLI path, version, auth
-- `/devin-refresh` — reload `devin models list --format json`
-
-## What this is / is not
-
-| This package | Not this package |
-|---|---|
-| Pi is the agent | Devin taking over the session |
-| Devin CLI for auth + catalog | Fake Windsurf OAuth paste flow |
-| Live CLI families (Opus 5, Fable 5, Sol, …) | Hardcoded 11-model cloud allowlist |
-| Completions streamed into Pi tools | An editor host for Devin |
-
-## Publish
-
-This is a standard Pi package (`keywords: ["pi-package"]` + `pi.extensions`). After you push to npm with that keyword, it can show up on [pi.dev/packages](https://pi.dev/packages).
+Those models are only reachable through the Devin CLI's model catalog. Upstream `pi-devin` solved that; this fork keeps that solution and adds the improvements listed above.
 
 ## License
 
-MIT. Unofficial. Not affiliated with Cognition.
+MIT. Unofficial — not affiliated with Cognition.
