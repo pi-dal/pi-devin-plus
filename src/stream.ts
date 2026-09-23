@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import * as zlib from "node:zlib";
+import { type JsonObject } from "@earendil-works/pi-ai";
 import {
   type Api,
   type AssistantMessage,
@@ -14,6 +15,7 @@ import { mapContextToChat, type ChatHistoryItem, type ContentPart, type ToolDef 
 import { getCachedUserJwt } from "./jwt.js";
 import { buildMetadata } from "./metadata.js";
 import { resolveModelUid } from "./models.js";
+import { calculateUsageTotal } from "./usage.js";
 import {
   encodeFixed64Field,
   encodeMessage,
@@ -29,6 +31,84 @@ const SOURCE_BY_ROLE: Record<ChatHistoryItem["role"], number> = {
   assistant: 2,
   tool: 4,
 };
+
+/**
+ * Tolerant parser for a tool-call argument JSON that is still streaming.
+ *
+ * `JSON.parse` throws until the final delta closes the document, which would
+ * leave `toolCall.arguments` empty for the entire stream. Pi's TUI reads
+ * `content.arguments` on every `toolcall_delta` to render the call
+ * incrementally (e.g. a `write` file body growing live), so empty arguments
+ * mean the user only sees the tool header until the call completes.
+ *
+ * Strategy: try a strict parse first; otherwise repair the incomplete tail by
+ * closing an unterminated string and any open arrays/objects, then parse the
+ * repaired candidate.
+ */
+function parsePartialToolArguments(partialJson: string): JsonObject {
+  if (!partialJson || partialJson.trim() === "") return {};
+  try {
+    const value = JSON.parse(partialJson);
+    return value && typeof value === "object" ? (value as JsonObject): ({} as JsonObject);
+  } catch {
+    // fall through to tolerant repair
+  }
+
+  // Close an unterminated string (accounting for escape sequences).
+  let candidate = partialJson;
+  let inString = false;
+  let escaped = false;
+  for (const ch of candidate) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') inString = !inString;
+  }
+  if (escaped) candidate = candidate.slice(0, -1); // drop a trailing lone backslash
+  if (inString) candidate += '"';
+
+  // Drop a trailing comma or a dangling `"key":` before we close the object.
+  candidate = candidate.replace(/,\s*$/, "").replace(/:\s*$/, ':""');
+  if (inString) candidate = candidate.replace(/,\s*"[^"]*"\s*:\s*"$/, "");
+
+  // Close any open objects/arrays, innermost last.
+  const stack: string[] = [];
+  inString = false;
+  escaped = false;
+  for (const ch of candidate) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === "{" || ch === "[") stack.push(ch);
+    else if (ch === "}" || ch === "]") stack.pop();
+  }
+  while (stack.length > 0) {
+    const open = stack.pop();
+    candidate += open === "{" ? "}" : "]";
+  }
+
+  try {
+    const value = JSON.parse(candidate);
+    return value && typeof value === "object" ? (value as JsonObject): ({} as JsonObject);
+  } catch {
+    return {};
+  }
+}
 
 export type CloudChatEvent =
   | { kind: "text"; text: string }
@@ -258,7 +338,15 @@ function decodeUsage(buf: Buffer): CloudChatEvent | null {
     kind: "usage",
     promptTokens,
     completionTokens,
-    totalTokens: (promptTokens ?? 0) + (completionTokens ?? 0),
+    // Cache tokens are part of the context even though they are reported as
+    // separate usage metrics. Keep totalTokens consistent with Pi's context
+    // accounting, which uses the complete input/output/cache sum.
+    totalTokens: calculateUsageTotal({
+      promptTokens,
+      completionTokens,
+      cachedInputTokens,
+      cacheCreationInputTokens,
+    }),
     cachedInputTokens,
     cacheCreationInputTokens,
   };
@@ -473,11 +561,7 @@ export function streamDevin(
       if (toolIndex < 0) return;
       const block = output.content[toolIndex];
       if (block.type === "toolCall") {
-        try {
-          block.arguments = JSON.parse(partialJson);
-        } catch {
-          // keep last parsed object
-        }
+        block.arguments = parsePartialToolArguments(partialJson);
         stream.push({
           type: "toolcall_end",
           contentIndex: toolIndex,
@@ -556,11 +640,7 @@ export function streamDevin(
           partialJson += event.argsDelta;
           const block = output.content[toolIndex];
           if (block.type === "toolCall") {
-            try {
-              block.arguments = JSON.parse(partialJson);
-            } catch {
-              // incomplete json
-            }
+            block.arguments = parsePartialToolArguments(partialJson);
           }
           stream.push({ type: "toolcall_delta", contentIndex: toolIndex, delta: event.argsDelta, partial: output });
         } else if (event.kind === "finish") {
@@ -574,7 +654,7 @@ export function streamDevin(
           output.usage.output = event.completionTokens ?? 0;
           output.usage.cacheRead = event.cachedInputTokens ?? 0;
           output.usage.cacheWrite = event.cacheCreationInputTokens ?? 0;
-          output.usage.totalTokens = event.totalTokens ?? output.usage.input + output.usage.output;
+          output.usage.totalTokens = calculateUsageTotal(event);
           calculateCost(model, output.usage);
         }
       }

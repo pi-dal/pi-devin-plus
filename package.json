@@ -38,7 +38,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "tsx --test test/*.test.mjs",
+    "test": "tsx --test test/*.test.mjs test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
