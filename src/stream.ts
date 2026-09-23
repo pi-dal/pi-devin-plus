@@ -22,6 +22,7 @@ import {
   frameConnectStream,
   iterFields,
 } from "./wire.js";
+import { packThinkingSignature, type ChatThinking } from "./thinking.js";
 
 const SOURCE_BY_ROLE: Record<ChatHistoryItem["role"], number> = {
   user: 1,
@@ -32,6 +33,8 @@ const SOURCE_BY_ROLE: Record<ChatHistoryItem["role"], number> = {
 export type CloudChatEvent =
   | { kind: "text"; text: string }
   | { kind: "reasoning"; text: string }
+  | { kind: "reasoning_signature"; signature: string; signatureType?: string }
+  | { kind: "reasoning_redacted" }
   | { kind: "tool_call_start"; id: string; name: string }
   | { kind: "tool_call_args"; argsDelta: string; id?: string }
   | { kind: "finish"; reason: "stop" | "tool_calls" | "length" | "content_filter" }
@@ -63,7 +66,11 @@ function encodeChatToolCall(tc: { id: string; name: string; arguments: string })
 function encodeChatMessagePrompt(
   content: ContentPart[],
   source: number,
-  opts?: { toolCallId?: string; toolCalls?: Array<{ id: string; name: string; arguments: string }> },
+  opts?: {
+    toolCallId?: string;
+    toolCalls?: Array<{ id: string; name: string; arguments: string }>;
+    thinking?: ChatThinking;
+  },
 ): Buffer {
   const text = content
     .filter((part) => part.type === "text")
@@ -80,7 +87,24 @@ function encodeChatMessagePrompt(
   for (const img of content.filter((part) => part.type === "image")) {
     parts.push(encodeMessage(10, encodeImageData(img)));
   }
+  // 11 thinking / 12 signature / 13 thinking_redacted / 18 signature_type — the
+  // same quartet the Devin CLI replays so the model keeps its own reasoning.
+  if (opts?.thinking) {
+    parts.push(encodeString(11, opts.thinking.text));
+    parts.push(encodeString(12, opts.thinking.signature));
+    if (opts.thinking.redacted) parts.push(encodeVarintField(13, 1));
+    if (opts.thinking.signatureType) parts.push(encodeString(18, opts.thinking.signatureType));
+  }
   return Buffer.concat(parts);
+}
+
+/** CortexTrajectoryReference: cascade trajectory, user-input step. */
+function encodeTrajectoryReference(trajectoryId: string): Buffer {
+  return Buffer.concat([
+    encodeString(1, trajectoryId),
+    encodeVarintField(3, 4),
+    encodeVarintField(4, 14),
+  ]);
 }
 
 function encodeCompletionConfiguration(maxOutputTokens?: number): Buffer {
@@ -113,6 +137,7 @@ function buildGetChatMessageRequest(args: {
   messages: ChatHistoryItem[];
   tools?: ToolDef[];
   cascadeId: string;
+  trajectoryId: string;
   promptId: string;
   sessionId: string;
   requestId: bigint;
@@ -132,6 +157,7 @@ function buildGetChatMessageRequest(args: {
       encodeChatMessagePrompt(normalizeContent(message.content), SOURCE_BY_ROLE[message.role], {
         toolCallId: message.role === "tool" ? message.tool_call_id : undefined,
         toolCalls: message.role === "assistant" ? message.tool_calls : undefined,
+        thinking: message.role === "assistant" ? message.thinking : undefined,
       }),
     ),
   );
@@ -142,6 +168,8 @@ function buildGetChatMessageRequest(args: {
     encodeVarintField(7, 5),
     encodeMessage(8, encodeCompletionConfiguration(args.maxOutputTokens)),
     ...(args.tools ?? []).map((tool) => encodeMessage(10, encodeToolDef(tool))),
+    encodeMessage(15, encodeTrajectoryReference(args.trajectoryId)),
+    encodeVarintField(20, 1),
     encodeString(16, args.cascadeId),
     encodeString(21, args.modelUid),
     encodeString(22, args.promptId),
@@ -149,6 +177,8 @@ function buildGetChatMessageRequest(args: {
 }
 
 function* decodeChatFrame(proto: Buffer): Generator<CloudChatEvent> {
+  let signature: string | undefined;
+  let signatureType: string | undefined;
   for (const field of iterFields(proto)) {
     if (field.num === 3 && field.wire === 2 && Buffer.isBuffer(field.value)) {
       const text = field.value.toString("utf8");
@@ -156,6 +186,15 @@ function* decodeChatFrame(proto: Buffer): Generator<CloudChatEvent> {
     } else if (field.num === 9 && field.wire === 2 && Buffer.isBuffer(field.value)) {
       const text = field.value.toString("utf8");
       if (text) yield { kind: "reasoning", text };
+    } else if (field.num === 11 && field.wire === 0) {
+      // GetChatMessageResponse.thinking_redacted
+      if (Number(field.value) !== 0) yield { kind: "reasoning_redacted" };
+    } else if (field.num === 10 && field.wire === 2 && Buffer.isBuffer(field.value)) {
+      const text = field.value.toString("utf8");
+      if (text) signature = text;
+    } else if (field.num === 21 && field.wire === 2 && Buffer.isBuffer(field.value)) {
+      const text = field.value.toString("utf8");
+      if (text) signatureType = text;
     } else if (field.num === 6 && field.wire === 2 && Buffer.isBuffer(field.value)) {
       let id: string | undefined;
       let name: string | undefined;
@@ -182,6 +221,9 @@ function* decodeChatFrame(proto: Buffer): Generator<CloudChatEvent> {
       if (usage) yield usage;
     }
   }
+  // The signature trails the thinking text, so it is yielded once the frame is
+  // fully read and gets attached to the block that is already closed.
+  if (signature) yield { kind: "reasoning_signature", signature, signatureType };
 }
 
 function decodeUsage(buf: Buffer): CloudChatEvent | null {
@@ -222,13 +264,13 @@ function decodeUsage(buf: Buffer): CloudChatEvent | null {
   };
 }
 
-const sessionCache = new Map<string, { sessionId: string; cascadeId: string }>();
+const sessionCache = new Map<string, { sessionId: string; cascadeId: string; trajectoryId: string }>();
 
 function sessionIds(apiKey: string, host: string) {
   const key = `${host}\x1f${apiKey}`;
   let ids = sessionCache.get(key);
   if (!ids) {
-    ids = { sessionId: randomUUID(), cascadeId: randomUUID() };
+    ids = { sessionId: randomUUID(), cascadeId: randomUUID(), trajectoryId: randomUUID() };
     sessionCache.set(key, ids);
   }
   return ids;
@@ -255,6 +297,7 @@ async function* streamChatEvents(args: {
     messages: args.messages,
     tools: args.tools,
     cascadeId: ids.cascadeId,
+    trajectoryId: ids.trajectoryId,
     promptId: randomUUID(),
     sessionId: ids.sessionId,
     requestId: BigInt(Date.now()),
@@ -279,6 +322,9 @@ async function* streamChatEvents(args: {
   if (!resp.body) throw new Error("GetChatMessage returned an empty body");
 
   const reader = resp.body.getReader();
+  // reader.closed rejects with the stream's storedError when the socket dies
+  // mid-response; nothing awaits it -> unhandledRejection crashes the process.
+  void reader.closed.catch(() => {});
   const queue: Buffer[] = [];
   let queued = 0;
   let sawEos = false;
@@ -359,7 +405,9 @@ async function* streamChatEvents(args: {
       // ignore
     }
     try {
-      void resp.body?.cancel();
+      // await: on an errored stream cancel() returns a rejected promise;
+      // `void`-ing it escapes the try/catch as an unhandled rejection.
+      await resp.body?.cancel();
     } catch {
       // ignore
     }
@@ -398,6 +446,7 @@ export function streamDevin(
     let textOpen = false;
     let thinkingOpen = false;
     let toolIndex = -1;
+    let thinkingIndex = -1;
     let partialJson = "";
     let toolId = "";
     let toolName = "";
@@ -474,6 +523,7 @@ export function streamDevin(
           closeText();
           if (!thinkingOpen) {
             output.content.push({ type: "thinking", thinking: "" });
+            thinkingIndex = output.content.length - 1;
             stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
             thinkingOpen = true;
           }
@@ -483,6 +533,14 @@ export function streamDevin(
             block.thinking += event.text;
             stream.push({ type: "thinking_delta", contentIndex: idx, delta: event.text, partial: output });
           }
+        } else if (event.kind === "reasoning_signature") {
+          const block = thinkingIndex >= 0 ? output.content[thinkingIndex] : undefined;
+          if (block?.type === "thinking") {
+            block.thinkingSignature = packThinkingSignature(event.signature, event.signatureType);
+          }
+        } else if (event.kind === "reasoning_redacted") {
+          const block = thinkingIndex >= 0 ? output.content[thinkingIndex] : undefined;
+          if (block?.type === "thinking") block.redacted = true;
         } else if (event.kind === "tool_call_start") {
           closeText();
           closeThinking();
