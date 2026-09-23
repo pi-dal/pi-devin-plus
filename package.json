@@ -1,6 +1,6 @@
 {
   "name": "pi-devin-plus",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Run your Devin / Cognition account models (Opus 5.5, GPT-5.6 Sol, Fable 5, SWE-2...) inside the pi coding agent - CLI login, live model catalog, full tool calling. Enhanced fork of kashyab12/pi-devin.",
   "type": "module",
   "keywords": [

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { buildMetadata } from "./metadata.js";
 import { encodeMessage, iterFields } from "./wire.js";
+import { fetchWithRetry, isTransientNetworkError } from "./net.js";
 
 export interface MintedUserJwt {
   jwt: string;
@@ -37,15 +38,19 @@ export async function mintUserJwt(
   });
   const timeout = AbortSignal.timeout(30_000);
   const combined = signal ? anySignal([signal, timeout]) : timeout;
-  const resp = await fetch(`${host.replace(/\/$/, "")}/exa.auth_pb.AuthService/GetUserJwt`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/proto",
-      "Connect-Protocol-Version": "1",
+  const resp = await fetchWithRetry(
+    `${host.replace(/\/$/, "")}/exa.auth_pb.AuthService/GetUserJwt`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/proto",
+        "Connect-Protocol-Version": "1",
+      },
+      body: new Uint8Array(encodeMessage(1, metadata)),
     },
-    body: new Uint8Array(encodeMessage(1, metadata)),
-    signal: combined,
-  });
+    isTransientNetworkError,
+    combined,
+  );
   const buf = Buffer.from(await resp.arrayBuffer());
   if (!resp.ok) {
     throw new Error(`GetUserJwt HTTP ${resp.status}: ${buf.toString("utf8").slice(0, 240)}`);

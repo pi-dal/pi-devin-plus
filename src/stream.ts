@@ -25,6 +25,7 @@ import {
   iterFields,
 } from "./wire.js";
 import { packThinkingSignature, type ChatThinking } from "./thinking.js";
+import { fetchWithRetry, isTransientNetworkError } from "./net.js";
 
 const SOURCE_BY_ROLE: Record<ChatHistoryItem["role"], number> = {
   user: 1,
@@ -393,17 +394,21 @@ async function* streamChatEvents(args: {
     maxOutputTokens: args.maxOutputTokens,
   });
 
-  const resp = await fetch(`${host}/exa.api_server_pb.ApiServerService/GetChatMessage`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/connect+proto",
-      "Connect-Protocol-Version": "1",
-      "Connect-Content-Encoding": "gzip",
-      "Connect-Accept-Encoding": "gzip",
+  const resp = await fetchWithRetry(
+    `${host}/exa.api_server_pb.ApiServerService/GetChatMessage`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/connect+proto",
+        "Connect-Protocol-Version": "1",
+        "Connect-Content-Encoding": "gzip",
+        "Connect-Accept-Encoding": "gzip",
+      },
+      body: new Uint8Array(frameConnectStream(proto, true)),
     },
-    body: new Uint8Array(frameConnectStream(proto, true)),
-    signal: args.signal,
-  });
+    isTransientNetworkError,
+    args.signal,
+  );
   if (!resp.ok) {
     throw new Error(`GetChatMessage HTTP ${resp.status}: ${(await resp.text()).slice(0, 300)}`);
   }
