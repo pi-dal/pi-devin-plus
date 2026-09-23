@@ -1,20 +1,29 @@
 {
-  "name": "pi-devin",
-  "version": "0.2.0",
-  "description": "Pi provider for Devin Local models. Auth and catalog come from the local Devin CLI; Pi stays the harness.",
+  "name": "pi-devin-plus",
+  "version": "0.1.0",
+  "description": "Devin Local models in Pi \u2014 thinking-signature replay, Devin Desktop sign-in reuse, and thinking-level model variants. Enhanced fork of kashyab12/pi-devin.",
   "type": "module",
   "keywords": [
     "pi-package",
     "pi-extension",
     "devin",
     "cognition",
+    "windsurf",
     "custom-provider"
   ],
-  "author": "Kashyab Ambarani",
+  "author": "pi-dal <hi@pi-dal.com>",
+  "contributors": [
+    "Kashyab Ambarani (upstream author)",
+    "mizorewww (pi-devin-local improvements)"
+  ],
   "license": "MIT",
+  "homepage": "https://github.com/pi-dal/pi-devin-plus#readme",
+  "bugs": {
+    "url": "https://github.com/pi-dal/pi-devin-plus/issues"
+  },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kashyab12/pi-devin.git"
+    "url": "git+https://github.com/pi-dal/pi-devin-plus.git"
   },
   "pi": {
     "extensions": [

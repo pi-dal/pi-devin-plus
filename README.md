@@ -1,10 +1,20 @@
-# pi-devin
+# pi-devin-plus
 
-A [Pi](https://pi.dev) package that uses **Devin Local** models inside Pi.
+A [Pi](https://pi.dev) package that uses **Devin Local** models inside Pi — an enhanced fork of [kashyab12/pi-devin](https://github.com/kashyab12/pi-devin).
 
 Pi stays the harness. The [Devin CLI](https://docs.devin.ai/cli) owns login and the live model catalog (`devin auth`, `devin models list`). This is not an ACP integration and does not use Zed.
 
-## Why this exists
+## What this fork adds over upstream
+
+- **Thinking + sealed-signature replay** — the model's own reasoning is replayed across turns (wire fields 11/12/13/18), so long agent loops keep coherent reasoning instead of restarting blind.
+- **Devin Desktop sign-in reuse** — if the Devin CLI store is empty but Devin Desktop is signed in, the Desktop session token is imported instead of forcing a browser round-trip. `/devin-status` shows which credential source is in use.
+- **Thinking-level model variants** — reasoning families register under a single family id (e.g. `devin/claude-opus-5`) and pi's thinking level (Shift+Tab / `/thinking`) picks the variant, instead of baking `-high` into the model id. Unsupported levels are explicitly hidden.
+- **No crash on mid-stream socket close** — a dropped connection during streaming no longer takes the process down via an unhandled rejection.
+- **CLI-aligned request shape** — cascade trajectory reference (field 15) and field 20 sent alongside upstream's promptId (field 22), matching what the Devin CLI puts on the wire.
+
+All of this is rebased onto upstream's pi ≥ 0.86 `TranscriptContext` API; upstream's test suite passes unchanged.
+
+## Why the upstream exists
 
 `pi-devin-auth` treated Devin as Cascade cloud chat. Models like Sol High, Opus 5, and Fable 5 then failed with:
 
