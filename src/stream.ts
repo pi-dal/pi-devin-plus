@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { mapContextToChat, type ChatHistoryItem, type ContentPart, type ToolDef } from "./context-map.js";
 import { getCachedUserJwt } from "./jwt.js";
-import { buildMetadata } from "./metadata.js";
+import { buildMetadata, resolveClientIdentity } from "./metadata.js";
 import { resolveModelUid } from "./models.js";
 import { calculateUsageTotal } from "./usage.js";
 import {
@@ -224,6 +224,8 @@ function buildGetChatMessageRequest(args: {
   requestId: bigint;
   triggerId: string;
   maxOutputTokens?: number;
+  ide: string;
+  version: string;
 }): Buffer {
   const metadata = buildMetadata({
     apiKey: args.apiKey,
@@ -231,6 +233,8 @@ function buildGetChatMessageRequest(args: {
     sessionId: args.sessionId,
     requestId: args.requestId,
     triggerId: args.triggerId,
+    ide: args.ide,
+    version: args.version,
   });
   const prompts = args.messages.map((message) =>
     encodeMessage(
@@ -378,6 +382,7 @@ async function* streamChatEvents(args: {
   const host = args.host.replace(/\/$/, "");
   const userJwt = await getCachedUserJwt(args.apiKey, host, args.signal);
   const ids = sessionIds(args.apiKey, host);
+  const identity = await resolveClientIdentity();
   const proto = buildGetChatMessageRequest({
     apiKey: args.apiKey,
     userJwt,
@@ -392,6 +397,8 @@ async function* streamChatEvents(args: {
     requestId: BigInt(Date.now()),
     triggerId: randomUUID(),
     maxOutputTokens: args.maxOutputTokens,
+    ide: identity.ide,
+    version: identity.version,
   });
 
   const resp = await fetchWithRetry(

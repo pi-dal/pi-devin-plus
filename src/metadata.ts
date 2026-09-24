@@ -5,6 +5,7 @@ import {
   encodeTimestampBody,
   encodeVarintField,
 } from "./wire.js";
+import { runDevin } from "./cli.js";
 
 /**
  * Cognition gates Devin Local-only models (every GPT-5.6 variant: Sol, Terra,
@@ -13,7 +14,7 @@ import {
  * server serves them and the response header echoes the exact model
  * (verified: "GPT-5.6 Sol High Thinking" for gpt-5-6-sol-high, 2026-08-29).
  */
-const FALLBACK_WINDSURF_VERSION = "3.6.27";
+const FALLBACK_WINDSURF_VERSION = "3.7.0";
 const PRODUCT_JSON =
   "/Applications/Devin.app/Contents/Resources/app/product.json";
 
@@ -31,6 +32,38 @@ function desktopWindsurfVersion(): string {
 
 export const CLIENT_VERSION = desktopWindsurfVersion();
 export const CLIENT_IDE = "devin-desktop";
+
+export interface ClientIdentity {
+  ide: string;
+  version: string;
+}
+
+let cachedIdentity: ClientIdentity | null = null;
+
+/**
+ * Cognition enforces a minimum client version server-side (observed 2026-09-23:
+ * "Your Windsurf version is out of date" against a stale devin-desktop
+ * version). The Devin CLI itself always passes its own gate, so prefer the
+ * CLI's real identity (ide "devin-cli" + its reported version) whenever the
+ * binary is available, and fall back to the Desktop identity otherwise.
+ */
+export async function resolveClientIdentity(): Promise<ClientIdentity> {
+  if (cachedIdentity) return cachedIdentity;
+  try {
+    const { stdout, code } = await runDevin(["--version"], { timeoutMs: 8_000 });
+    if (code === 0) {
+      const match = stdout.match(/\d+\.\d+\.\d+/);
+      if (match) {
+        cachedIdentity = { ide: "devin-cli", version: match[0] };
+        return cachedIdentity;
+      }
+    }
+  } catch {
+    // fall through to the Desktop identity
+  }
+  cachedIdentity = { ide: CLIENT_IDE, version: desktopWindsurfVersion() };
+  return cachedIdentity;
+}
 
 export interface MetadataInput {
   apiKey: string;
