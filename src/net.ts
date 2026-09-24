@@ -1,8 +1,8 @@
 /**
- * One retry for transient network-level failures ("fetch failed",
- * ECONNRESET, socket hang-up) behind proxies/TUN. Retries only when fetch()
- * itself rejects — once response headers arrive, the stream is owned by the
- * caller and is never replayed.
+ * Up to three attempts for transient network-level failures ("fetch failed",
+ * ECONNRESET, socket hang-up) behind proxies/TUN. Backoff 0.4/0.8/1.6 s with
+ * jitter. Retries only when fetch() itself rejects — once response headers
+ * arrive, the stream is owned by the caller and is never replayed.
  */
 export async function fetchWithRetry(
   input: string,
@@ -10,19 +10,19 @@ export async function fetchWithRetry(
   shouldRetry?: (error: unknown) => boolean,
   signal?: AbortSignal,
 ): Promise<Response> {
-  let firstError: unknown;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
     if (signal?.aborted) throw new Error("Aborted");
     try {
       return await fetch(input, { ...init, signal });
     } catch (error) {
       if (signal?.aborted) throw new Error("Aborted");
-      if (attempt > 0 || shouldRetry?.(error) === false) throw error;
-      firstError = error;
-      await new Promise((resolve) => setTimeout(resolve, 400 + Math.floor(Math.random() * 400)));
+      lastError = error;
+      if (attempt === 2 || shouldRetry?.(error) === false) throw error;
+      await new Promise((resolve) => setTimeout(resolve, (400 << attempt) + Math.floor(Math.random() * 400)));
     }
   }
-  throw firstError;
+  throw lastError;
 }
 
 export function isTransientNetworkError(error: unknown): boolean {
